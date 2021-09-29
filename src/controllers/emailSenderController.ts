@@ -24,6 +24,7 @@ import {emailService} from '../emailService';
 import {TokenHelper} from '../TokenHelper';
 import {RefreshJwtPayloadModel} from '../models/RefreshJwtPayloadModel';
 import { Permission } from '../enums/permission';
+import crypto from 'crypto';
 import { URL } from 'url';
 
 const {
@@ -36,7 +37,8 @@ const {
   },
   emailService: {
     minIntervalInSeconds
-  }
+  },
+  telegramSecretLink
 } = require('../../config.js');
 
 const UserEntries = () => knex('User');
@@ -144,4 +146,31 @@ removeOldTokens.route('/')
       }
     });
 
-export { emailMagicLinkSenderRouter as EmailMagicLinkSenderController, emailInviteLinkSenderRouter as EmailInviteLinkSenderController, removeOldTokens as RemoveOldTokensController };
+const EmailTelegramLinkSenderController = express.Router();
+EmailTelegramLinkSenderController.route('/')
+    .post(async (request, response) => {
+      const email = getEmail(request);
+      const {prefix} = getArgs(request);
+      try {
+        if (hasPermission(request, Permission.SENDTELEGRAMLINK)) {
+          const user = await UserEntries().where('email', email).andWhere('status', UserStatus.APPROVED).first();
+          if (user) {
+            const {id} = user;
+            const secret = await new Promise(resolve => crypto.randomBytes(16, function(ex, buf) { resolve(buf.toString('hex')); }));
+            const expireAt = Date.now() / 1000.0 + 60 * 15;
+            await knex.raw('DELETE FROM telegram_secret WHERE user_id = ?', [id]);
+            await knex.raw('INSERT INTO telegram_secret (user_id, secret, expire_at) VALUES (?, ?, to_timestamp(?))', [id, secret, expireAt]);
+            const magicLink = `${telegramSecretLink}${prefix}${secret}`;
+            await emailService.sendTelegramLinkEmail(email, magicLink);
+            return response.status(200).json({}).end();
+          }
+          return response.status(404).json({}).end();
+        }
+        return response.status(401).json({}).end();
+      } catch (e) {
+        console.debug('email/sendTelegramLinkEmail error', e);
+        response.status(500).json({error: e.stack}).end();
+      }
+    });
+
+export { emailMagicLinkSenderRouter as EmailMagicLinkSenderController, emailInviteLinkSenderRouter as EmailInviteLinkSenderController, removeOldTokens as RemoveOldTokensController, EmailTelegramLinkSenderController};
